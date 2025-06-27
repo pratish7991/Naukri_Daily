@@ -1,3 +1,28 @@
+
+Awesome! Since your script is already working, let’s now add a mail alert using SMTP to notify you once the resume is uploaded successfully.
+
+✅ You’ll Need:
+A Gmail ID (preferably a separate one for automation).
+
+Generate an App Password if you're using Gmail (you can’t use your regular Gmail password due to security).
+
+🔐 Step 1: Set Up App Password (once)
+Go to: https://myaccount.google.com/apppasswords
+
+Choose:
+
+App: Mail
+
+Device: Windows Computer
+
+Copy the 16-digit password (keep it safe, treat like your password)
+
+✅ Step 2: Update Your Script
+Here’s how to send an email after successful upload:
+
+
+
+
 ✅ Here's Exactly How to Automate Your Script with Task Scheduler on Windows:
 1. 🧠 Understand What You Need
 You need Task Scheduler to run:
