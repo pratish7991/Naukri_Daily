@@ -1,25 +1,63 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+from dotenv import load_dotenv
 import time
 import os
+from pathlib import Path
 
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# ==== 🔐 Your Credentials & File ====
-NAUKRI_EMAIL = 'EMAILHERE'
-NAUKRI_PASSWORD = 'PASSWORDHERE'
-RESUME_PATH = r'C:\Users\hp\Desktop\Naukri\PratishDewanganMLE.pdf' # Make sure this is correct
+# ==== 🔐 Environment Configuration ====
+load_dotenv()
+NAUKRI_EMAIL = os.environ.get('NAUKRI_EMAIL')
+NAUKRI_PASSWORD = os.environ.get('NAUKRI_PASSWORD')
+SENDER_EMAIL = os.environ.get('SENDER_EMAIL')
+SENDER_APP_PASSWORD = os.environ.get('SENDER_APP_PASSWORD')
+RECEIVER_EMAIL = os.environ.get('RECEIVER_EMAIL')
+RESUME_PATH = Path(os.environ.get('RESUME_PATH')).expanduser() if os.environ.get('RESUME_PATH') else Path.cwd() / 'PratishDewanganMLE.pdf'
+RESUME_PATH = RESUME_PATH.resolve()
+HEADLESS = os.environ.get('HEADLESS', '1') == '1'
 
 # ==== 🚀 Main Function ====
 def upload_resume():
+    if not NAUKRI_EMAIL or not NAUKRI_PASSWORD:
+        raise RuntimeError('Missing NAUKRI_EMAIL or NAUKRI_PASSWORD environment variable.')
+    if not SENDER_EMAIL or not SENDER_APP_PASSWORD or not RECEIVER_EMAIL:
+        raise RuntimeError('Missing email settings in environment variables.')
+    if not RESUME_PATH.exists():
+        raise FileNotFoundError(f'Resume file not found at: {RESUME_PATH}')
+
+    print(f"Using resume path: {RESUME_PATH}")
+    print(f"HEADLESS mode: {HEADLESS}")
+
     # Set up Chrome driver
     options = webdriver.ChromeOptions()
+    if HEADLESS:
+        options.add_argument("--headless=new")
+    options.add_argument("--remote-allow-origins=*")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--disable-infobars")
     options.add_argument("--start-maximized")
-    driver = webdriver.Chrome(options=options)
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+    options.binary_location = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": "Object.defineProperty(navigator, 'webdriver', { get: () => undefined })"
+    })
 
     wait = WebDriverWait(driver, 20)
 
@@ -55,7 +93,7 @@ def upload_resume():
 
         # Step 6: Upload resume
         upload_input = wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='file']")))
-        upload_input.send_keys(RESUME_PATH)
+        upload_input.send_keys(str(RESUME_PATH))
         print("✅ Resume uploaded successfully!")
 
         time.sleep(5)
@@ -70,16 +108,12 @@ def upload_resume():
 
 
 def send_success_email():
-    sender_email = "dpratishraj7991@gmail.com"             # The Gmail used to send the mail
-    sender_app_password = "zcjordzxmcoiaemy"
-    receiver_email = "dpratishraj7991@gmail.com"      # Your personal email
-
     subject = "✅ Naukri Resume Upload Success"
     body = "Hi Pratish,\n\nYour resume was successfully uploaded to Naukri.com.\n\nRegards,\nYour Automation Bot 🤖"
 
     msg = MIMEMultipart()
-    msg['From'] = sender_email
-    msg['To'] = receiver_email
+    msg['From'] = SENDER_EMAIL
+    msg['To'] = RECEIVER_EMAIL
     msg['Subject'] = subject
 
     msg.attach(MIMEText(body, 'plain'))
@@ -87,7 +121,7 @@ def send_success_email():
     try:
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
-        server.login(sender_email, sender_app_password)
+        server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
         server.send_message(msg)
         server.quit()
         print("📧 Success email sent!")
@@ -96,10 +130,10 @@ def send_success_email():
 
 # ==== 🔁 Run It ====
 if __name__ == "__main__":
-    if os.path.exists(RESUME_PATH):
+    try:
         upload_resume()
-    else:
-        print(f"❌ Resume file not found at: {RESUME_PATH}")
+    except Exception as e:
+        print("❌ Exited with error:", e)
 
 
 
