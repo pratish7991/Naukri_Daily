@@ -7,6 +7,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from dotenv import load_dotenv
 import time
 import os
+import sys
 from pathlib import Path
 
 import smtplib
@@ -23,6 +24,22 @@ RECEIVER_EMAIL = os.environ.get('RECEIVER_EMAIL')
 RESUME_PATH = Path(os.environ.get('RESUME_PATH')).expanduser() if os.environ.get('RESUME_PATH') else Path.cwd() / 'PratishDewanganMLE.pdf'
 RESUME_PATH = RESUME_PATH.resolve()
 HEADLESS = os.environ.get('HEADLESS', '1') == '1'
+
+
+def get_chrome_binary():
+    if sys.platform.startswith('darwin'):
+        return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+
+    candidates = [
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/google-chrome',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/chromium',
+    ]
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return candidate
+    return None
 
 # ==== 🚀 Main Function ====
 def upload_resume():
@@ -52,7 +69,13 @@ def upload_resume():
     options.add_argument("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
-    options.binary_location = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+
+    chrome_binary = get_chrome_binary()
+    if chrome_binary:
+        options.binary_location = chrome_binary
+        print(f"Using Chrome binary: {chrome_binary}")
+    else:
+        print("Warning: Chrome binary not found, relying on driver defaults.")
 
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
