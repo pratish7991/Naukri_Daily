@@ -12,6 +12,7 @@ import sys
 import imaplib
 import email
 import re
+import html
 import traceback
 from pathlib import Path
 
@@ -64,6 +65,19 @@ def find_otp_inputs(driver):
     return [inp for inp in driver.find_elements(By.XPATH, "//input[not(@type='hidden')]") if inp.is_displayed()][:6]
 
 
+def extract_otp_from_email_body(body, html_body):
+    text = body or ''
+    if not text and html_body:
+        text = re.sub(r'<[^>]+>', ' ', html_body)
+
+    text = html.unescape(text)
+    text = re.sub(r'[^0-9\s\-]', ' ', text)
+    text = re.sub(r'[\s\-]+', '', text)
+
+    match = re.search(r'\b(\d{4,8})\b', text)
+    return match.group(1) if match else None
+
+
 def fetch_naukri_otp():
     if not EMAIL_ADDRESS or not EMAIL_APP_PASSWORD:
         raise RuntimeError('Email credentials not configured for OTP retrieval.')
@@ -74,6 +88,7 @@ def fetch_naukri_otp():
 
     search_terms = ['Naukri', 'naukri', 'OTP', 'One Time Password', 'Verification']
     message_ids = []
+
     for term in search_terms:
         status, data = mail.search(None, f'(UNSEEN SUBJECT "{term}")')
         if status == 'OK' and data and data[0]:
@@ -81,49 +96,54 @@ def fetch_naukri_otp():
             break
 
     if not message_ids:
-        status, data = mail.search(None, '(UNSEEN)')
-        if status == 'OK' and data and data[0]:
-            message_ids = data[0].split()
+        print('🔎 No unread OTP email found. Falling back to last matching Naukri email.')
+        for term in search_terms:
+            status, data = mail.search(None, f'(SUBJECT "{term}")')
+            if status == 'OK' and data and data[0]:
+                message_ids = data[0].split()
+                break
 
     if not message_ids:
-        raise RuntimeError('No unread email found for OTP retrieval.')
+        status, data = mail.search(None, '(ALL)')
+        if status == 'OK' and data and data[0]:
+            message_ids = data[0].split()[-20:]
 
-    latest_id = message_ids[-1]
-    status, data = mail.fetch(latest_id, '(RFC822)')
-    if status != 'OK':
-        raise RuntimeError('Failed to fetch OTP email.')
+    if not message_ids:
+        raise RuntimeError('No email found for OTP retrieval.')
 
-    raw_email = data[0][1]
-    message = email.message_from_bytes(raw_email)
+    for message_id in reversed(message_ids[-10:]):
+        status, data = mail.fetch(message_id, '(RFC822)')
+        if status != 'OK' or not data or not data[0]:
+            continue
 
-    body = ''
-    html_body = ''
-    if message.is_multipart():
-        for part in message.walk():
-            content_type = part.get_content_type()
-            if content_type == 'text/plain' and part.get_content_disposition() != 'attachment':
-                body = part.get_payload(decode=True).decode(errors='ignore')
-                break
-            if content_type == 'text/html' and part.get_content_disposition() != 'attachment':
-                html_body = part.get_payload(decode=True).decode(errors='ignore')
-    else:
-        content_type = message.get_content_type()
-        payload = message.get_payload(decode=True)
-        if payload:
-            decoded = payload.decode(errors='ignore')
-            if content_type == 'text/plain':
-                body = decoded
-            elif content_type == 'text/html':
-                html_body = decoded
+        raw_email = data[0][1]
+        message = email.message_from_bytes(raw_email)
+        body = ''
+        html_body = ''
+        if message.is_multipart():
+            for part in message.walk():
+                content_type = part.get_content_type()
+                if content_type == 'text/plain' and part.get_content_disposition() != 'attachment':
+                    body = part.get_payload(decode=True).decode(errors='ignore')
+                    break
+                if content_type == 'text/html' and part.get_content_disposition() != 'attachment':
+                    html_body = part.get_payload(decode=True).decode(errors='ignore')
+        else:
+            content_type = message.get_content_type()
+            payload = message.get_payload(decode=True)
+            if payload:
+                decoded = payload.decode(errors='ignore')
+                if content_type == 'text/plain':
+                    body = decoded
+                elif content_type == 'text/html':
+                    html_body = decoded
 
-    if not body and html_body:
-        body = re.sub(r'<[^>]+>', ' ', html_body)
+        otp_code = extract_otp_from_email_body(body, html_body)
+        if otp_code:
+            print('📩 Using OTP from email ID:', message_id.decode() if isinstance(message_id, bytes) else message_id)
+            return otp_code
 
-    match = re.search(r'\b(\d{4,8})\b', body)
-    if not match:
-        raise RuntimeError('Could not find OTP code in email body.')
-
-    return match.group(1)
+    raise RuntimeError('Could not find OTP code in email body.')
 
 # ==== 🚀 Main Function ====
 def upload_resume():
