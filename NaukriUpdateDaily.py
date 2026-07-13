@@ -216,14 +216,20 @@ def upload_resume():
                 pass
             time.sleep(5)
 
-        page_source = driver.page_source.lower()
-        if any(term in page_source for term in [
-            'otp', 'one-time password', 'one time password', 'two-step', 'two step',
-            'verification code', 'verify your identity', 'send otp', 'enter otp'
-        ]):
-            raise RuntimeError('Naukri login requires OTP/verification. Automation cannot continue in this environment.')
+        try:
+            wait.until(EC.any_of(
+                EC.url_contains('mnjuser/profile'),
+                EC.presence_of_element_located((By.XPATH, "//input[@type='file']")),
+                EC.presence_of_element_located((By.XPATH, "//a[contains(@href,'/mnjuser/profile') or contains(text(),'My Naukri')]") )
+            ))
+        except TimeoutException:
+            pass
 
-        if 'mnjuser/profile' not in driver.current_url and 'login' in driver.current_url.lower():
+        otp_inputs_after = find_otp_inputs(driver)
+        if otp_inputs_after and 'mnjuser/profile' not in driver.current_url.lower():
+            raise RuntimeError('Naukri login still requires OTP/verification after submission. The form may need manual intervention.')
+
+        if 'mnjuser/profile' not in driver.current_url.lower() and 'login' in driver.current_url.lower():
             raise RuntimeError('Naukri login did not complete successfully. Check credentials or page behavior.')
 
         print("✅ Logged in successfully.")
