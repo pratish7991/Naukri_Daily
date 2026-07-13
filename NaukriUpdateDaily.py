@@ -49,6 +49,21 @@ def get_chrome_binary():
     return None
 
 
+def find_otp_inputs(driver):
+    xpath = "//input[(contains(translate(@name,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'OTP') or contains(translate(@id,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'OTP') or contains(translate(@placeholder,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'OTP') or contains(translate(@aria-label,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'OTP')) and not(@type='hidden')]"
+    inputs = driver.find_elements(By.XPATH, xpath)
+    if inputs:
+        return [inp for inp in inputs if inp.is_displayed()]
+
+    fallback = driver.find_elements(By.XPATH, "//input[(self::input[@type='tel'] or self::input[@type='number'] or self::input[@type='text']) and not(@type='hidden')]")
+    visible = [inp for inp in fallback if inp.is_displayed()]
+    if visible:
+        return visible[:6]
+
+    # fallback to any visible input fields if nothing else matches
+    return [inp for inp in driver.find_elements(By.XPATH, "//input[not(@type='hidden')]") if inp.is_displayed()][:6]
+
+
 def fetch_naukri_otp():
     if not EMAIL_ADDRESS or not EMAIL_APP_PASSWORD:
         raise RuntimeError('Email credentials not configured for OTP retrieval.')
@@ -165,22 +180,23 @@ def upload_resume():
         print("✅ Login form submitted.")
         time.sleep(5)
 
-        otp_input = None
-        try:
-            otp_input = WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located(
-                    (By.XPATH, "//input[contains(translate(@placeholder,'otp','OTP'),'OTP') or contains(translate(@name,'otp','OTP'),'OTP') or contains(translate(@id,'otp','OTP'),'OTP')]")))
-        except TimeoutException:
-            pass
-
-        if otp_input:
-            print('🔐 OTP field detected. Retrieving email OTP...')
+        otp_inputs = find_otp_inputs(driver)
+        if otp_inputs:
+            print(f'🔐 Detected {len(otp_inputs)} OTP input(s). Retrieving email OTP...')
             otp_code = fetch_naukri_otp()
             print(f'🔐 Using OTP: {otp_code}')
-            otp_input.clear()
-            otp_input.send_keys(otp_code)
+
+            if len(otp_inputs) == 1:
+                otp_inputs[0].clear()
+                otp_inputs[0].send_keys(otp_code)
+            else:
+                for i, char in enumerate(otp_code):
+                    if i < len(otp_inputs):
+                        otp_inputs[i].clear()
+                        otp_inputs[i].send_keys(char)
+
             try:
-                submit_button = driver.find_element(By.XPATH, "//button[@type='submit' or contains(text(),'Verify') or contains(text(),'Submit')]")
+                submit_button = driver.find_element(By.XPATH, "//button[@type='submit' or contains(translate(text(),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'VERIFY') or contains(translate(text(),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'SUBMIT')]")
                 submit_button.click()
             except Exception:
                 pass
