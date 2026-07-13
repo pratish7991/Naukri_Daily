@@ -97,13 +97,27 @@ def fetch_naukri_otp():
     message = email.message_from_bytes(raw_email)
 
     body = ''
+    html_body = ''
     if message.is_multipart():
         for part in message.walk():
-            if part.get_content_type() == 'text/plain' and part.get_content_disposition() != 'attachment':
+            content_type = part.get_content_type()
+            if content_type == 'text/plain' and part.get_content_disposition() != 'attachment':
                 body = part.get_payload(decode=True).decode(errors='ignore')
                 break
+            if content_type == 'text/html' and part.get_content_disposition() != 'attachment':
+                html_body = part.get_payload(decode=True).decode(errors='ignore')
     else:
-        body = message.get_payload(decode=True).decode(errors='ignore')
+        content_type = message.get_content_type()
+        payload = message.get_payload(decode=True)
+        if payload:
+            decoded = payload.decode(errors='ignore')
+            if content_type == 'text/plain':
+                body = decoded
+            elif content_type == 'text/html':
+                html_body = decoded
+
+    if not body and html_body:
+        body = re.sub(r'<[^>]+>', ' ', html_body)
 
     match = re.search(r'\b(\d{4,8})\b', body)
     if not match:
