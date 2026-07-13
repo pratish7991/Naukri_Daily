@@ -3,11 +3,16 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 from webdriver_manager.chrome import ChromeDriverManager
 from dotenv import load_dotenv
 import time
 import os
 import sys
+import imaplib
+import email
+import re
+import traceback
 from pathlib import Path
 
 import smtplib
@@ -21,6 +26,8 @@ NAUKRI_PASSWORD = os.environ.get('NAUKRI_PASSWORD')
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL')
 SENDER_APP_PASSWORD = os.environ.get('SENDER_APP_PASSWORD')
 RECEIVER_EMAIL = os.environ.get('RECEIVER_EMAIL')
+EMAIL_ADDRESS = os.environ.get('EMAIL_ADDRESS', SENDER_EMAIL)
+EMAIL_APP_PASSWORD = os.environ.get('EMAIL_APP_PASSWORD', SENDER_APP_PASSWORD)
 RESUME_PATH = Path(os.environ.get('RESUME_PATH')).expanduser() if os.environ.get('RESUME_PATH') else Path.cwd() / 'PratishDewanganMLE.pdf'
 RESUME_PATH = RESUME_PATH.resolve()
 HEADLESS = os.environ.get('HEADLESS', '1') == '1'
@@ -40,6 +47,54 @@ def get_chrome_binary():
         if Path(candidate).exists():
             return candidate
     return None
+
+
+def fetch_naukri_otp():
+    if not EMAIL_ADDRESS or not EMAIL_APP_PASSWORD:
+        raise RuntimeError('Email credentials not configured for OTP retrieval.')
+
+    mail = imaplib.IMAP4_SSL('imap.gmail.com')
+    mail.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
+    mail.select('inbox')
+
+    search_terms = ['Naukri', 'naukri', 'OTP', 'One Time Password', 'Verification']
+    message_ids = []
+    for term in search_terms:
+        status, data = mail.search(None, f'(UNSEEN SUBJECT "{term}")')
+        if status == 'OK' and data and data[0]:
+            message_ids = data[0].split()
+            break
+
+    if not message_ids:
+        status, data = mail.search(None, '(UNSEEN)')
+        if status == 'OK' and data and data[0]:
+            message_ids = data[0].split()
+
+    if not message_ids:
+        raise RuntimeError('No unread email found for OTP retrieval.')
+
+    latest_id = message_ids[-1]
+    status, data = mail.fetch(latest_id, '(RFC822)')
+    if status != 'OK':
+        raise RuntimeError('Failed to fetch OTP email.')
+
+    raw_email = data[0][1]
+    message = email.message_from_bytes(raw_email)
+
+    body = ''
+    if message.is_multipart():
+        for part in message.walk():
+            if part.get_content_type() == 'text/plain' and part.get_content_disposition() != 'attachment':
+                body = part.get_payload(decode=True).decode(errors='ignore')
+                break
+    else:
+        body = message.get_payload(decode=True).decode(errors='ignore')
+
+    match = re.search(r'\b(\d{4,8})\b', body)
+    if not match:
+        raise RuntimeError('Could not find OTP code in email body.')
+
+    return match.group(1)
 
 # ==== 🚀 Main Function ====
 def upload_resume():
@@ -107,8 +162,42 @@ def upload_resume():
 
         # Step 4: Click Login
         driver.find_element(By.XPATH, "//button[@type='submit']").click()
-        print("✅ Logged in successfully.")
+        print("✅ Login form submitted.")
         time.sleep(5)
+
+        otp_input = None
+        try:
+            otp_input = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located(
+                    (By.XPATH, "//input[contains(translate(@placeholder,'otp','OTP'),'OTP') or contains(translate(@name,'otp','OTP'),'OTP') or contains(translate(@id,'otp','OTP'),'OTP')]")))
+        except TimeoutException:
+            pass
+
+        if otp_input:
+            print('🔐 OTP field detected. Retrieving email OTP...')
+            otp_code = fetch_naukri_otp()
+            print(f'🔐 Using OTP: {otp_code}')
+            otp_input.clear()
+            otp_input.send_keys(otp_code)
+            try:
+                submit_button = driver.find_element(By.XPATH, "//button[@type='submit' or contains(text(),'Verify') or contains(text(),'Submit')]")
+                submit_button.click()
+            except Exception:
+                pass
+            time.sleep(5)
+
+        page_source = driver.page_source.lower()
+        if any(term in page_source for term in [
+            'otp', 'one-time password', 'one time password', 'two-step', 'two step',
+            'verification code', 'verify your identity', 'send otp', 'enter otp'
+        ]):
+            raise RuntimeError('Naukri login requires OTP/verification. Automation cannot continue in this environment.')
+
+        if 'mnjuser/profile' not in driver.current_url and 'login' in driver.current_url.lower():
+            raise RuntimeError('Naukri login did not complete successfully. Check credentials or page behavior.')
+
+        print("✅ Logged in successfully.")
+        time.sleep(2)
 
         # Step 5: Go to profile page
         driver.get("https://www.naukri.com/mnjuser/profile")
@@ -125,7 +214,13 @@ def upload_resume():
 
     except Exception as e:
         print("❌ Error occurred:", e)
-        driver.save_screenshot("error.png")
+        print(traceback.format_exc())
+        try:
+            driver.save_screenshot("error.png")
+            with open('error_page.html', 'w', encoding='utf-8') as f:
+                f.write(driver.page_source)
+        except Exception:
+            pass
     finally:
         driver.quit()
 
