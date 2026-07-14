@@ -84,30 +84,61 @@ def extract_otp_from_email_body(body, html_body, expected_length=None):
     if not full_text:
         return None
 
-    patterns = [
-        r'(?:otp|one time password|verification code|login code|security code|code to login|please enter below otp)[^0-9]{0,80}([0-9\s\-]{4,12})',
-        r'([0-9]{6})',
-        r'([0-9]{5})',
-        r'([0-9]{4})',
+    if expected_length:
+        exact_matches = re.findall(rf'(?<!\d)(\d{{{expected_length}}})(?!\d)', full_text)
+        if exact_matches:
+            print('🔎 Exact OTP matches found:', exact_matches)
+            return exact_matches[0]
+    else:
+        exact_matches = re.findall(r'(?<!\d)(\d{6})(?!\d)', full_text)
+        if exact_matches:
+            print('🔎 Exact 6-digit matches found:', exact_matches)
+            return exact_matches[0]
+
+    otp_phrases = [
+        r'otp',
+        r'one time password',
+        r'verification code',
+        r'login code',
+        r'security code',
+        r'code to login',
+        r'please enter below otp',
     ]
 
-    for pattern in patterns:
-        for match in re.finditer(pattern, full_text, flags=re.IGNORECASE):
-            code = re.sub(r'[^0-9]', '', match.group(1))
-            if expected_length and len(code) != expected_length:
-                continue
-            if expected_length and len(code) == expected_length:
-                return code
-            if not expected_length:
-                return code
+    for phrase in otp_phrases:
+        for match in re.finditer(phrase, full_text, flags=re.IGNORECASE):
+            tail = full_text[match.end():match.end() + 200]
+            if expected_length:
+                next_match = re.search(rf'(?<!\d)(\d{{{expected_length}}})(?!\d)', tail)
+                if next_match:
+                    code = next_match.group(1)
+                    print('🔎 OTP near phrase', phrase, 'found:', code)
+                    return code
+            else:
+                next_match = re.search(r'(?<!\d)(\d{6})(?!\d)', tail)
+                if next_match:
+                    code = next_match.group(1)
+                    print('🔎 OTP near phrase', phrase, 'found:', code)
+                    return code
 
-    all_codes = [re.sub(r'[^0-9]', '', m) for m in re.findall(r'(?<!\d)(?:\d[\s\-]){3,7}\d(?!\d)', full_text)]
     if expected_length:
-        for code in all_codes:
-            if len(code) == expected_length:
-                return code
-    if all_codes:
-        return all_codes[0]
+        fallback_codes = re.findall(rf'(?<!\d)(\d{{{expected_length}}})(?!\d)', full_text)
+        if fallback_codes:
+            print('🔎 Fallback exact-length matches found:', fallback_codes)
+            return fallback_codes[0]
+    else:
+        fallback_codes = re.findall(r'(?<!\d)(\d{6})(?!\d)', full_text)
+        if fallback_codes:
+            print('🔎 Fallback 6-digit matches found:', fallback_codes)
+            return fallback_codes[0]
+        fallback_codes = re.findall(r'(?<!\d)(\d{5})(?!\d)', full_text)
+        if fallback_codes:
+            print('🔎 Fallback 5-digit matches found:', fallback_codes)
+            return fallback_codes[0]
+        fallback_codes = re.findall(r'(?<!\d)(\d{4})(?!\d)', full_text)
+        if fallback_codes:
+            print('🔎 Fallback 4-digit matches found:', fallback_codes)
+            return fallback_codes[0]
 
     return None
 
