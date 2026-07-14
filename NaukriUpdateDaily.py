@@ -65,26 +65,54 @@ def find_otp_inputs(driver):
     return [inp for inp in driver.find_elements(By.XPATH, "//input[not(@type='hidden')]") if inp.is_displayed()][:6]
 
 
-def extract_otp_from_email_body(body, html_body):
-    text = body or ''
-    if not text and html_body:
-        text = re.sub(r'<[^>]+>', ' ', html_body)
-
+def clean_email_text(text):
+    if not text:
+        return ''
+    text = re.sub(r'(?is)<(script|style).*?>.*?</\1>', ' ', text)
+    text = re.sub(r'<[^>]+>', ' ', text)
     text = html.unescape(text)
-    text = re.sub(r'[^0-9\s\-]', ' ', text)
-    text = re.sub(r'[\s\-]+', '', text)
-
-    match = re.search(r'\b(\d{4,8})\b', text)
-    if match:
-        return match.group(1)
-
-    combined = (body or '') + '\n' + (html_body or '')
-    combined = html.unescape(combined)
-    fallback = re.search(r'\b(\d{4,8})\b', combined)
-    return fallback.group(1) if fallback else None
+    text = re.sub(r'[^0-9a-zA-Z\s\-]', ' ', text)
+    text = re.sub(r'[\s\-]+', ' ', text)
+    return text.strip()
 
 
-def fetch_naukri_otp():
+def extract_otp_from_email_body(body, html_body, expected_length=None):
+    text = clean_email_text(body)
+    html_text = clean_email_text(html_body)
+    full_text = ' '.join([part for part in [text, html_text] if part])
+
+    if not full_text:
+        return None
+
+    patterns = [
+        r'(?:otp|one time password|verification code|login code|security code|code to login|please enter below otp)[^0-9]{0,80}([0-9\s\-]{4,12})',
+        r'([0-9]{6})',
+        r'([0-9]{5})',
+        r'([0-9]{4})',
+    ]
+
+    for pattern in patterns:
+        for match in re.finditer(pattern, full_text, flags=re.IGNORECASE):
+            code = re.sub(r'[^0-9]', '', match.group(1))
+            if expected_length and len(code) != expected_length:
+                continue
+            if expected_length and len(code) == expected_length:
+                return code
+            if not expected_length:
+                return code
+
+    all_codes = [re.sub(r'[^0-9]', '', m) for m in re.findall(r'(?<!\d)(?:\d[\s\-]){3,7}\d(?!\d)', full_text)]
+    if expected_length:
+        for code in all_codes:
+            if len(code) == expected_length:
+                return code
+    if all_codes:
+        return all_codes[0]
+
+    return None
+
+
+def fetch_naukri_otp(expected_length=None):
     if not EMAIL_ADDRESS or not EMAIL_APP_PASSWORD:
         raise RuntimeError('Email credentials not configured for OTP retrieval.')
 
@@ -257,11 +285,15 @@ def upload_resume():
 
         otp_inputs = find_otp_inputs(driver)
         if otp_inputs:
-            print(f'🔐 Detected {len(otp_inputs)} OTP input(s). Retrieving email OTP...')
-            otp_code = fetch_naukri_otp()
+            expected_length = len(otp_inputs)
+            print(f'🔐 Detected {expected_length} OTP input(s). Retrieving email OTP...')
+            otp_code = fetch_naukri_otp(expected_length=expected_length)
             print(f'🔐 Using OTP: {otp_code}')
 
-            if len(otp_inputs) == 1:
+            if otp_code is None:
+                raise RuntimeError('Failed to extract OTP from email body.')
+
+            if expected_length == 1:
                 otp_inputs[0].clear()
                 otp_inputs[0].send_keys(otp_code)
             else:
