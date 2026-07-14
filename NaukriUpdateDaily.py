@@ -89,11 +89,17 @@ def fetch_naukri_otp():
     search_terms = ['Naukri', 'naukri', 'OTP', 'One Time Password', 'Verification']
     message_ids = []
 
-    for term in search_terms:
-        status, data = mail.search(None, f'(UNSEEN SUBJECT "{term}")')
-        if status == 'OK' and data and data[0]:
-            message_ids = data[0].split()
+    for attempt in range(12):
+        for term in search_terms:
+            status, data = mail.search(None, f'(UNSEEN SUBJECT "{term}")')
+            if status == 'OK' and data and data[0]:
+                message_ids = data[0].split()
+                break
+        if message_ids:
             break
+        if attempt < 11:
+            print(f'⏳ Waiting for OTP email... attempt {attempt + 1}/12')
+            time.sleep(5)
 
     if not message_ids:
         print('🔎 No unread OTP email found. Falling back to last matching Naukri email.')
