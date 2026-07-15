@@ -220,22 +220,93 @@ def fetch_naukri_otp(expected_length=OTP_LENGTH):
             pass
 
 
-def wait_for_upload_confirmation(driver, timeout=30):
-    confirmation_xpath = (
-        "//*[contains(translate(normalize-space(.),"
-        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'resume uploaded') "
-        "or contains(translate(normalize-space(.),"
-        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'resume has been uploaded') "
-        "or contains(translate(normalize-space(.),"
-        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'successfully uploaded')]"
+def wait_for_upload_confirmation(driver, timeout=60):
+    printable_phrases = [
+        'resume uploaded',
+        'resume has been uploaded',
+        'successfully uploaded',
+        'updated successfully',
+        'resume updated',
+        'saved successfully',
+        'cv submitted',
+        'uploaded successfully',
+    ]
+
+    def _upload_finished(d):
+        page_text = (d.page_source or '').lower()
+        for phrase in printable_phrases:
+            if phrase in page_text:
+                print(f'✅ Upload confirmation phrase detected: {phrase}')
+                return True
+
+        try:
+            file_input = d.find_element(By.CSS_SELECTOR, "input[type='file']")
+            if file_input and not file_input.is_displayed():
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    try:
+        WebDriverWait(driver, timeout).until(_upload_finished)
+    except TimeoutException:
+        page_title = (driver.title or '').strip()
+        current_url = driver.current_url
+        page_text = (driver.page_source or '')[:2000]
+        print(f'⚠️ Upload confirmation timeout. URL={current_url} TITLE={page_title}')
+        print('⚠️ Page preview:', page_text[:1000])
+        raise
+
+
+def resume_service_is_logged_in(driver):
+    try:
+        login_link = driver.find_element(By.ID, 'login_Layer')
+        return not login_link.is_displayed()
+    except Exception:
+        return True
+
+
+def log_in_to_resume_service(driver, timeout=30):
+    """Authenticate on Naukri FastForward when its session is separate."""
+    if resume_service_is_logged_in(driver):
+        return
+
+    print('🔐 Naukri FastForward has a separate session. Logging in there...')
+    driver.find_element(By.ID, 'login_Layer').click()
+
+    email_input = WebDriverWait(driver, timeout).until(
+        EC.visibility_of_element_located((By.ID, 'eLogin'))
     )
-    WebDriverWait(driver, timeout).until(
-        EC.visibility_of_element_located((By.XPATH, confirmation_xpath))
-    )
+    password_input = driver.find_element(By.ID, 'pLogin')
+    email_input.clear()
+    email_input.send_keys(NAUKRI_EMAIL)
+    password_input.clear()
+    password_input.send_keys(NAUKRI_PASSWORD)
+    driver.find_element(By.CSS_SELECTOR, '#lgnFrm button[type="submit"]').click()
+
+    time.sleep(3)
+    otp_inputs = find_otp_inputs(driver)
+    if otp_inputs:
+        print('🔐 Resume service requested OTP. Retrieving a new 6-digit OTP...')
+        otp_code = fetch_naukri_otp(expected_length=OTP_LENGTH)
+        if len(otp_inputs) == 1:
+            otp_inputs[0].send_keys(otp_code)
+        else:
+            for otp_input, digit in zip(otp_inputs, otp_code):
+                otp_input.send_keys(digit)
+        driver.find_element(
+            By.XPATH,
+            "//button[@type='submit' or contains(translate(normalize-space(.),"
+            "'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'VERIFY')]",
+        ).click()
+
+    WebDriverWait(driver, timeout).until(lambda d: resume_service_is_logged_in(d))
+    print('✅ Logged in to Naukri FastForward.')
 
 
 def find_resume_upload_input(driver, timeout=30):
-    """Locate Naukri's file input across its profile and resume-upload pages."""
+    """Open Naukri's resume service and find its upload input."""
     file_input_locator = (By.CSS_SELECTOR, "input[type='file']")
     upload_trigger_xpath = (
         "//*[self::button or self::a or @role='button']["
@@ -246,14 +317,12 @@ def find_resume_upload_input(driver, timeout=30):
         "or contains(translate(normalize-space(.),"
         "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'replace resume')]"
     )
-    upload_pages = [
-        'https://resume.naukri.com/cv-submission',
-        'https://www.naukri.com/mnjuser/profile',
-    ]
+    upload_pages = ['https://resume.naukri.com/cv-submission']
 
     for page_url in upload_pages:
         print(f'🔎 Looking for resume upload control at: {page_url}')
         driver.get(page_url)
+        log_in_to_resume_service(driver, timeout)
         try:
             return WebDriverWait(driver, timeout).until(
                 EC.presence_of_element_located(file_input_locator)
@@ -396,6 +465,7 @@ def upload_resume():
         # Step 5: Open the resume-management UI and upload the latest resume.
         upload_input = find_resume_upload_input(driver)
         upload_input.send_keys(str(RESUME_PATH))
+        time.sleep(3)
         wait_for_upload_confirmation(driver)
         print("✅ Resume uploaded successfully!")
 
