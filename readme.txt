@@ -1,94 +1,76 @@
+
 Generate an App Password if you're using Gmail (you can’t use your regular Gmail password due to security).
 
-🔐 Step 1: Set Up Gmail App Password (once)
+🔐 Step 1: Set Up App Password (once)
 Go to: https://myaccount.google.com/apppasswords
 
 Choose:
-- App: Mail
-- Device: Other (Custom name) or your current device
 
-Copy the 16-digit password and save it safely.
+App: Mail
 
-✅ Step 2: Configure environment variables
-Create a `.env` file locally (do not commit it) or use GitHub Actions secrets.
+Device: Windows Computer
 
-Example `.env`:
-```
-NAUKRI_EMAIL=your_naukri_email@example.com
-NAUKRI_PASSWORD=your_naukri_password
-SENDER_EMAIL=your_email@gmail.com
-SENDER_APP_PASSWORD=your_app_password
-RECEIVER_EMAIL=your_email@gmail.com
-EMAIL_ADDRESS=your_email@gmail.com
-EMAIL_APP_PASSWORD=your_app_password
-RESUME_PATH=PratishDewanganMLE.pdf
-HEADLESS=1
-DEBUG_FULL_EMAIL=1
-```
+Copy the 16-digit password (keep it safe, treat like your password)
 
-> Note: `RESUME_PATH` should point to your resume file. The default path is the repository root file `PratishDewanganMLE.pdf`.
+✅ Step 2: Update Your Script
+Here’s how to send an email after successful upload:
 
-✅ Step 3: Install dependencies
-Run:
-```
-pip install -r requirements.txt
-```
 
-✅ Step 4: Run locally to verify
-Run:
-```
-python NaukriUpdateDaily.py
-```
 
-If it logs in and uploads your resume, the script is working.
 
----
+✅ Here's Exactly How to Automate Your Script with Task Scheduler on Windows:
+1. 🧠 Understand What You Need
+You need Task Scheduler to run:
 
-## Daily automation with GitHub Actions
-This repository already includes a GitHub Actions workflow at `.github/workflows/naukri-daily.yml`.
+bash
+Copy
+Edit
+<path_to_python.exe> <path_to_your_script.py>
+In your case:
 
-### Add GitHub Secrets
-In your repository on GitHub, go to:
-`Settings` → `Secrets and variables` → `Actions`
+bash
+Copy
+Edit
+c:\Users\hp\Desktop\Naukri\.venv\Scripts\python.exe c:\Users\hp\Desktop\Naukri\upload_resume.py
+2. 🛠️ Step-by-Step Setup in Task Scheduler
+📌 Open Task Scheduler
+Press Win + S, type Task Scheduler, and open it.
 
-Add these secrets:
-- `NAUKRI_EMAIL`
-- `NAUKRI_PASSWORD`
-- `SENDER_EMAIL`
-- `SENDER_APP_PASSWORD`
-- `RECEIVER_EMAIL`
-- `EMAIL_ADDRESS`
-- `EMAIL_APP_PASSWORD`
+➕ Create a Basic Task
+Click “Create Basic Task”
 
-### Schedule
-The workflow is configured to run daily at 07:00 IST.
+Name it: Naukri Resume Upload
 
-### Manual trigger
-You can also run it manually from GitHub:
-1. Open `Actions`
-2. Select `Naukri Daily Resume Upload`
-3. Click `Run workflow`
+Trigger: Select Daily and set time (e.g., 10:00 AM)
 
----
+⚙️ Action → Select Start a program
+Program/script:
 
-## How it works
-1. The script logs into Naukri with your credentials.
-2. It detects OTP verification and tries to fetch the OTP from Gmail.
-3. It uploads your resume file.
-4. It sends a success email to the receiver address.
+makefile
+Copy
+Edit
+c:\Users\hp\Desktop\Naukri\.venv\Scripts\python.exe
+Add arguments:
 
----
+makefile
+Copy
+Edit
+c:\Users\hp\Desktop\Naukri\upload_resume.py
+Start in (optional but recommended):
 
-## Important notes
-- Do not commit `.env` to the repository.
-- Use GitHub secrets for any credentials used in the workflow.
-- If Naukri changes the login flow, you may need to update the script.
-- Keep your resume file name and path correct.
-- `DEBUG_FULL_EMAIL=1` prints the complete raw OTP email for debugging. Set it
-  to `0` after debugging because the output can include sensitive email data.
+makefile
+Copy
+Edit
+c:\Users\hp\Desktop\Naukri
+✅ Ensure all paths are correct and point to:
 
----
+Python interpreter inside your .venv
 
-## Local vs Cloud
-- Local: use `.env` and run `python NaukriUpdateDaily.py`
-- Cloud: use GitHub Actions and repo secrets for fully automated daily runs
+The full path to your script
+
+🧪 Final Step: Test it
+Find the task in the list
+
+Right-click → Run
+
+If it runs correctly (browser opens and uploads resume), it's working

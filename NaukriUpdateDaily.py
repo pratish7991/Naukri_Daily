@@ -12,7 +12,6 @@ import sys
 import imaplib
 import email
 import re
-import html
 import traceback
 from pathlib import Path
 
@@ -32,15 +31,11 @@ EMAIL_APP_PASSWORD = os.environ.get('EMAIL_APP_PASSWORD', SENDER_APP_PASSWORD)
 RESUME_PATH = Path(os.environ.get('RESUME_PATH')).expanduser() if os.environ.get('RESUME_PATH') else Path.cwd() / 'PratishDewanganMLE.pdf'
 RESUME_PATH = RESUME_PATH.resolve()
 HEADLESS = os.environ.get('HEADLESS', '1') == '1'
-OTP_LENGTH = 6
-ARTIFACTS_DIR = Path.cwd() / 'artifacts'
-DEBUG_FULL_EMAIL = os.environ.get('DEBUG_FULL_EMAIL', '1') == '1'
 
 
 def get_chrome_binary():
     if sys.platform.startswith('darwin'):
-        candidate = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-        return candidate if Path(candidate).exists() else None
+        return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
     candidates = [
         '/usr/bin/google-chrome-stable',
@@ -60,323 +55,75 @@ def find_otp_inputs(driver):
     if inputs:
         return [inp for inp in inputs if inp.is_displayed()]
 
-    # Do not treat arbitrary text fields as OTP fields. That can mistake the
-    # login form or profile fields for an OTP challenge.
-    return []
+    fallback = driver.find_elements(By.XPATH, "//input[(self::input[@type='tel'] or self::input[@type='number'] or self::input[@type='text']) and not(@type='hidden')]")
+    visible = [inp for inp in fallback if inp.is_displayed()]
+    if visible:
+        return visible[:6]
+
+    # fallback to any visible input fields if nothing else matches
+    return [inp for inp in driver.find_elements(By.XPATH, "//input[not(@type='hidden')]") if inp.is_displayed()][:6]
 
 
-def clean_email_text(text):
-    if not text:
-        return ''
-    text = re.sub(r'(?is)<(script|style).*?>.*?</\1>', ' ', text)
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = html.unescape(text)
-    text = re.sub(r'[^0-9a-zA-Z\s\-]', ' ', text)
-    text = re.sub(r'[\s\-]+', ' ', text)
-    return text.strip()
-
-
-def extract_otp_from_email_body(body, html_body, expected_length=OTP_LENGTH):
-    text = clean_email_text(body)
-    html_text = clean_email_text(html_body)
-    full_text = ' '.join([part for part in [text, html_text] if part])
-
-    if not full_text:
-        return None
-
-    otp_phrases = [
-        r'otp',
-        r'one time password',
-        r'verification code',
-        r'login code',
-        r'security code',
-        r'code to login',
-        r'please enter below otp',
-    ]
-
-    for phrase in otp_phrases:
-        for match in re.finditer(phrase, full_text, flags=re.IGNORECASE):
-            tail = full_text[match.end():match.end() + 200]
-            if expected_length:
-                next_match = re.search(rf'(?<!\d)(\d{{{expected_length}}})(?!\d)', tail)
-                if next_match:
-                    return next_match.group(1)
-            else:
-                next_match = re.search(r'(?<!\d)(\d{6})(?!\d)', tail)
-                if next_match:
-                    return next_match.group(1)
-
-    if expected_length:
-        fallback_codes = re.findall(rf'(?<!\d)(\d{{{expected_length}}})(?!\d)', full_text)
-        if fallback_codes:
-            return fallback_codes[0]
-    else:
-        fallback_codes = re.findall(r'(?<!\d)(\d{6})(?!\d)', full_text)
-        if fallback_codes:
-            return fallback_codes[0]
-        fallback_codes = re.findall(r'(?<!\d)(\d{5})(?!\d)', full_text)
-        if fallback_codes:
-            print('🔎 Fallback 5-digit matches found:', fallback_codes)
-            return fallback_codes[0]
-        fallback_codes = re.findall(r'(?<!\d)(\d{4})(?!\d)', full_text)
-        if fallback_codes:
-            print('🔎 Fallback 4-digit matches found:', fallback_codes)
-            return fallback_codes[0]
-
-    return None
-
-
-def fetch_naukri_otp(expected_length=OTP_LENGTH):
+def fetch_naukri_otp():
     if not EMAIL_ADDRESS or not EMAIL_APP_PASSWORD:
         raise RuntimeError('Email credentials not configured for OTP retrieval.')
 
-    print('📧 Starting OTP retrieval for:', EMAIL_ADDRESS)
     mail = imaplib.IMAP4_SSL('imap.gmail.com')
-    try:
-        mail.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
-        mail.select('inbox')
+    mail.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
+    mail.select('inbox')
 
-        # Only accept unread messages that arrive for this login attempt. Using
-        # older messages risks submitting an expired OTP.
-        search_terms = ['Naukri', 'OTP', 'One Time Password', 'Verification']
-        message_ids = []
-        for attempt in range(12):
-            print(f'⏳ Waiting for a new OTP email... attempt {attempt + 1}/12')
-            for term in search_terms:
-                status, data = mail.search(None, f'(UNSEEN SUBJECT "{term}")')
-                if status == 'OK' and data and data[0]:
-                    message_ids = data[0].split()
-                    break
-            if message_ids:
+    search_terms = ['Naukri', 'naukri', 'OTP', 'One Time Password', 'Verification']
+    message_ids = []
+    for term in search_terms:
+        status, data = mail.search(None, f'(UNSEEN SUBJECT "{term}")')
+        if status == 'OK' and data and data[0]:
+            message_ids = data[0].split()
+            break
+
+    if not message_ids:
+        status, data = mail.search(None, '(UNSEEN)')
+        if status == 'OK' and data and data[0]:
+            message_ids = data[0].split()
+
+    if not message_ids:
+        raise RuntimeError('No unread email found for OTP retrieval.')
+
+    latest_id = message_ids[-1]
+    status, data = mail.fetch(latest_id, '(RFC822)')
+    if status != 'OK':
+        raise RuntimeError('Failed to fetch OTP email.')
+
+    raw_email = data[0][1]
+    message = email.message_from_bytes(raw_email)
+
+    body = ''
+    html_body = ''
+    if message.is_multipart():
+        for part in message.walk():
+            content_type = part.get_content_type()
+            if content_type == 'text/plain' and part.get_content_disposition() != 'attachment':
+                body = part.get_payload(decode=True).decode(errors='ignore')
                 break
-            if attempt < 11:
-                time.sleep(5)
+            if content_type == 'text/html' and part.get_content_disposition() != 'attachment':
+                html_body = part.get_payload(decode=True).decode(errors='ignore')
+    else:
+        content_type = message.get_content_type()
+        payload = message.get_payload(decode=True)
+        if payload:
+            decoded = payload.decode(errors='ignore')
+            if content_type == 'text/plain':
+                body = decoded
+            elif content_type == 'text/html':
+                html_body = decoded
 
-        if not message_ids:
-            raise RuntimeError('No new unread Naukri OTP email arrived within 60 seconds.')
+    if not body and html_body:
+        body = re.sub(r'<[^>]+>', ' ', html_body)
 
-        for message_id in reversed(message_ids[-10:]):
-            status, data = mail.fetch(message_id, '(RFC822)')
-            if status != 'OK' or not data or not data[0]:
-                continue
+    match = re.search(r'\b(\d{4,8})\b', body)
+    if not match:
+        raise RuntimeError('Could not find OTP code in email body.')
 
-            raw_email = data[0][1]
-            if DEBUG_FULL_EMAIL:
-                print('\n========== RAW OTP EMAIL START ==========')
-                print(raw_email.decode('utf-8', errors='replace'))
-                print('========== RAW OTP EMAIL END ============\n')
-
-            message = email.message_from_bytes(raw_email)
-            subject = message.get('Subject', '<no subject>')
-            from_header = message.get('From', '<no sender>')
-            date_header = message.get('Date', '<no date>')
-            body = ''
-            html_body = ''
-            if message.is_multipart():
-                for part in message.walk():
-                    if part.get_content_maintype() == 'multipart' or part.get_content_disposition() == 'attachment':
-                        continue
-                    content_type = part.get_content_type()
-                    payload = part.get_payload(decode=True)
-                    if not payload:
-                        continue
-                    try:
-                        decoded = payload.decode(part.get_content_charset() or 'utf-8', errors='ignore')
-                    except Exception:
-                        decoded = payload.decode(errors='ignore')
-                    if content_type == 'text/plain':
-                        body += decoded + '\n'
-                    elif content_type == 'text/html':
-                        html_body += decoded + '\n'
-            else:
-                content_type = message.get_content_type()
-                payload = message.get_payload(decode=True)
-                if payload:
-                    try:
-                        decoded = payload.decode(message.get_content_charset() or 'utf-8', errors='ignore')
-                    except Exception:
-                        decoded = payload.decode(errors='ignore')
-                    if content_type == 'text/plain':
-                        body = decoded
-                    elif content_type == 'text/html':
-                        html_body = decoded
-
-            preview = (body or html_body or '').replace('\n', ' ').replace('\r', ' ').strip()
-            if len(preview) > 400:
-                preview = preview[:400] + '...'
-            print(f'📩 Candidate email: subject="{subject}" from="{from_header}" date="{date_header}"')
-            print('    preview:', preview)
-
-            otp_code = extract_otp_from_email_body(body, html_body, expected_length)
-            if otp_code:
-                print(f'✅ Found OTP: {otp_code}')
-                return otp_code
-
-        raise RuntimeError('Could not find a 6-digit OTP in the new Naukri email.')
-    finally:
-        try:
-            mail.logout()
-        except Exception:
-            pass
-
-
-def wait_for_upload_confirmation(driver, timeout=60):
-    printable_phrases = [
-        'resume uploaded',
-        'resume has been uploaded',
-        'successfully uploaded',
-        'updated successfully',
-        'resume updated',
-        'saved successfully',
-        'cv submitted',
-        'uploaded successfully',
-    ]
-
-    def _upload_finished(d):
-        page_text = (d.page_source or '').lower()
-        for phrase in printable_phrases:
-            if phrase in page_text:
-                print(f'✅ Upload confirmation phrase detected: {phrase}')
-                return True
-
-        try:
-            file_input = d.find_element(By.CSS_SELECTOR, "input[type='file']")
-            if file_input and not file_input.is_displayed():
-                return True
-        except Exception:
-            pass
-
-        return False
-
-    try:
-        WebDriverWait(driver, timeout).until(_upload_finished)
-    except TimeoutException:
-        page_title = (driver.title or '').strip()
-        current_url = driver.current_url
-        page_text = (driver.page_source or '')[:2000]
-        print(f'⚠️ Upload confirmation timeout. URL={current_url} TITLE={page_title}')
-        print('⚠️ Page preview:', page_text[:1000])
-        raise
-
-
-def resume_service_is_logged_in(driver):
-    try:
-        login_link = driver.find_element(By.ID, 'login_Layer')
-        return not login_link.is_displayed()
-    except Exception:
-        return True
-
-
-def log_in_to_resume_service(driver, timeout=30):
-    """Authenticate on Naukri FastForward when its session is separate."""
-    if resume_service_is_logged_in(driver):
-        return
-
-    print('🔐 Naukri FastForward has a separate session. Logging in there...')
-    login_link = driver.find_element(By.ID, 'login_Layer')
-    driver.execute_script('arguments[0].click();', login_link)
-
-    # FastForward keeps this form in the DOM even while its login overlay is
-    # hidden. In headless Chrome the overlay sometimes does not open, so use
-    # the same form directly rather than waiting indefinitely for visibility.
-    try:
-        email_input = WebDriverWait(driver, 5).until(
-            EC.visibility_of_element_located((By.ID, 'eLogin'))
-        )
-        password_input = driver.find_element(By.ID, 'pLogin')
-        email_input.clear()
-        email_input.send_keys(NAUKRI_EMAIL)
-        password_input.clear()
-        password_input.send_keys(NAUKRI_PASSWORD)
-        driver.find_element(By.CSS_SELECTOR, '#lgnFrm button[type="submit"]').click()
-    except TimeoutException:
-        print('⚠️ FastForward login overlay stayed hidden; submitting its embedded form directly.')
-        login_form = WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located((By.ID, 'lgnFrm'))
-        )
-        email_input = driver.find_element(By.ID, 'eLogin')
-        password_input = driver.find_element(By.ID, 'pLogin')
-        driver.execute_script(
-            "arguments[0].value = arguments[1];"
-            "arguments[0].dispatchEvent(new Event('input', {bubbles: true}));",
-            email_input,
-            NAUKRI_EMAIL,
-        )
-        driver.execute_script(
-            "arguments[0].value = arguments[1];"
-            "arguments[0].dispatchEvent(new Event('input', {bubbles: true}));",
-            password_input,
-            NAUKRI_PASSWORD,
-        )
-        driver.execute_script('arguments[0].submit();', login_form)
-
-    time.sleep(3)
-    otp_inputs = find_otp_inputs(driver)
-    if otp_inputs:
-        print('🔐 Resume service requested OTP. Retrieving a new 6-digit OTP...')
-        otp_code = fetch_naukri_otp(expected_length=OTP_LENGTH)
-        if len(otp_inputs) == 1:
-            otp_inputs[0].send_keys(otp_code)
-        else:
-            for otp_input, digit in zip(otp_inputs, otp_code):
-                otp_input.send_keys(digit)
-        driver.find_element(
-            By.XPATH,
-            "//button[@type='submit' or contains(translate(normalize-space(.),"
-            "'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'VERIFY')]",
-        ).click()
-
-    # The form targets a hidden iframe. Reload the page after submission so
-    # the top-level FastForward page reflects the new authenticated session.
-    driver.get('https://resume.naukri.com/cv-submission')
-    WebDriverWait(driver, timeout).until(lambda d: resume_service_is_logged_in(d))
-    print('✅ Logged in to Naukri FastForward.')
-
-
-def find_resume_upload_input(driver, timeout=30):
-    """Open Naukri's resume service and find its upload input."""
-    file_input_locator = (By.CSS_SELECTOR, "input[type='file']")
-    upload_trigger_xpath = (
-        "//*[self::button or self::a or @role='button']["
-        "contains(translate(normalize-space(.),"
-        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'upload resume') "
-        "or contains(translate(normalize-space(.),"
-        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'update resume') "
-        "or contains(translate(normalize-space(.),"
-        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'replace resume')]"
-    )
-    upload_pages = ['https://resume.naukri.com/cv-submission']
-
-    for page_url in upload_pages:
-        print(f'🔎 Looking for resume upload control at: {page_url}')
-        driver.get(page_url)
-        log_in_to_resume_service(driver, timeout)
-        try:
-            return WebDriverWait(driver, timeout).until(
-                EC.presence_of_element_located(file_input_locator)
-            )
-        except TimeoutException:
-            # Some profile variants only render the file input after the user
-            # activates an "Upload/Update Resume" control.
-            triggers = driver.find_elements(By.XPATH, upload_trigger_xpath)
-            for trigger in triggers:
-                try:
-                    if trigger.is_displayed() and trigger.is_enabled():
-                        driver.execute_script('arguments[0].click();', trigger)
-                        break
-                except Exception:
-                    continue
-            try:
-                return WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located(file_input_locator)
-                )
-            except TimeoutException:
-                print(f'⚠️ No file input at {driver.current_url}; page title: {driver.title!r}')
-
-    raise TimeoutException(
-        'Could not find Naukri resume upload input on the profile or resume-submission page.'
-    )
-
+    return match.group(1)
 
 # ==== 🚀 Main Function ====
 def upload_resume():
@@ -449,11 +196,9 @@ def upload_resume():
 
         otp_inputs = find_otp_inputs(driver)
         if otp_inputs:
-            print('🔐 Detected an OTP challenge. Retrieving a new 6-digit email OTP...')
-            otp_code = fetch_naukri_otp(expected_length=OTP_LENGTH)
-
-            if otp_code is None:
-                raise RuntimeError('Failed to extract OTP from email body.')
+            print(f'🔐 Detected {len(otp_inputs)} OTP input(s). Retrieving email OTP...')
+            otp_code = fetch_naukri_otp()
+            print(f'🔐 Using OTP: {otp_code}')
 
             if len(otp_inputs) == 1:
                 otp_inputs[0].clear()
@@ -490,13 +235,16 @@ def upload_resume():
         print("✅ Logged in successfully.")
         time.sleep(2)
 
-        # Step 5: Open the resume-management UI and upload the latest resume.
-        upload_input = find_resume_upload_input(driver)
+        # Step 5: Go to profile page
+        driver.get("https://www.naukri.com/mnjuser/profile")
+        time.sleep(5)
+
+        # Step 6: Upload resume
+        upload_input = wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='file']")))
         upload_input.send_keys(str(RESUME_PATH))
-        time.sleep(3)
-        wait_for_upload_confirmation(driver)
         print("✅ Resume uploaded successfully!")
 
+        time.sleep(5)
         send_success_email()
 
 
@@ -504,13 +252,11 @@ def upload_resume():
         print("❌ Error occurred:", e)
         print(traceback.format_exc())
         try:
-            ARTIFACTS_DIR.mkdir(exist_ok=True)
-            driver.save_screenshot(str(ARTIFACTS_DIR / 'error.png'))
-            with open(ARTIFACTS_DIR / 'error_page.html', 'w', encoding='utf-8') as f:
+            driver.save_screenshot("error.png")
+            with open('error_page.html', 'w', encoding='utf-8') as f:
                 f.write(driver.page_source)
         except Exception:
             pass
-        raise
     finally:
         driver.quit()
 
@@ -527,10 +273,11 @@ def send_success_email():
     msg.attach(MIMEText(body, 'plain'))
 
     try:
-        with smtplib.SMTP('smtp.gmail.com', 587) as server:
-            server.starttls()
-            server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
-            server.send_message(msg)
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
+        server.send_message(msg)
+        server.quit()
         print("📧 Success email sent!")
     except Exception as e:
         print("❌ Failed to send email:", e)
@@ -541,4 +288,8 @@ if __name__ == "__main__":
         upload_resume()
     except Exception as e:
         print("❌ Exited with error:", e)
-        sys.exit(1)
+
+
+
+
+
