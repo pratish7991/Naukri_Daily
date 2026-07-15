@@ -23,6 +23,7 @@ EMAIL_ADDRESS=your_email@gmail.com
 EMAIL_APP_PASSWORD=your_app_password
 RESUME_PATH=PratishDewanganMLE.pdf
 HEADLESS=1
+DEBUG_FULL_EMAIL=1
 ```
 
 > Note: `RESUME_PATH` should point to your resume file. The default path is the repository root file `PratishDewanganMLE.pdf`.
@@ -83,10 +84,11 @@ You can also run it manually from GitHub:
 - Use GitHub secrets for any credentials used in the workflow.
 - If Naukri changes the login flow, you may need to update the script.
 - Keep your resume file name and path correct.
+- `DEBUG_FULL_EMAIL=1` prints the complete raw OTP email for debugging. Set it
+  to `0` after debugging because the output can include sensitive email data.
 
 ---
 
 ## Local vs Cloud
 - Local: use `.env` and run `python NaukriUpdateDaily.py`
 - Cloud: use GitHub Actions and repo secrets for fully automated daily runs
-

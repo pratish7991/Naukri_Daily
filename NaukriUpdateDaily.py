@@ -32,11 +32,15 @@ EMAIL_APP_PASSWORD = os.environ.get('EMAIL_APP_PASSWORD', SENDER_APP_PASSWORD)
 RESUME_PATH = Path(os.environ.get('RESUME_PATH')).expanduser() if os.environ.get('RESUME_PATH') else Path.cwd() / 'PratishDewanganMLE.pdf'
 RESUME_PATH = RESUME_PATH.resolve()
 HEADLESS = os.environ.get('HEADLESS', '1') == '1'
+OTP_LENGTH = 6
+ARTIFACTS_DIR = Path.cwd() / 'artifacts'
+DEBUG_FULL_EMAIL = os.environ.get('DEBUG_FULL_EMAIL', '1') == '1'
 
 
 def get_chrome_binary():
     if sys.platform.startswith('darwin'):
-        return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+        candidate = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+        return candidate if Path(candidate).exists() else None
 
     candidates = [
         '/usr/bin/google-chrome-stable',
@@ -56,13 +60,9 @@ def find_otp_inputs(driver):
     if inputs:
         return [inp for inp in inputs if inp.is_displayed()]
 
-    fallback = driver.find_elements(By.XPATH, "//input[(self::input[@type='tel'] or self::input[@type='number'] or self::input[@type='text']) and not(@type='hidden')]")
-    visible = [inp for inp in fallback if inp.is_displayed()]
-    if visible:
-        return visible[:6]
-
-    # fallback to any visible input fields if nothing else matches
-    return [inp for inp in driver.find_elements(By.XPATH, "//input[not(@type='hidden')]") if inp.is_displayed()][:6]
+    # Do not treat arbitrary text fields as OTP fields. That can mistake the
+    # login form or profile fields for an OTP challenge.
+    return []
 
 
 def clean_email_text(text):
@@ -76,24 +76,13 @@ def clean_email_text(text):
     return text.strip()
 
 
-def extract_otp_from_email_body(body, html_body, expected_length=None):
+def extract_otp_from_email_body(body, html_body, expected_length=OTP_LENGTH):
     text = clean_email_text(body)
     html_text = clean_email_text(html_body)
     full_text = ' '.join([part for part in [text, html_text] if part])
 
     if not full_text:
         return None
-
-    if expected_length:
-        exact_matches = re.findall(rf'(?<!\d)(\d{{{expected_length}}})(?!\d)', full_text)
-        if exact_matches:
-            print('🔎 Exact OTP matches found:', exact_matches)
-            return exact_matches[0]
-    else:
-        exact_matches = re.findall(r'(?<!\d)(\d{6})(?!\d)', full_text)
-        if exact_matches:
-            print('🔎 Exact 6-digit matches found:', exact_matches)
-            return exact_matches[0]
 
     otp_phrases = [
         r'otp',
@@ -111,25 +100,19 @@ def extract_otp_from_email_body(body, html_body, expected_length=None):
             if expected_length:
                 next_match = re.search(rf'(?<!\d)(\d{{{expected_length}}})(?!\d)', tail)
                 if next_match:
-                    code = next_match.group(1)
-                    print('🔎 OTP near phrase', phrase, 'found:', code)
-                    return code
+                    return next_match.group(1)
             else:
                 next_match = re.search(r'(?<!\d)(\d{6})(?!\d)', tail)
                 if next_match:
-                    code = next_match.group(1)
-                    print('🔎 OTP near phrase', phrase, 'found:', code)
-                    return code
+                    return next_match.group(1)
 
     if expected_length:
         fallback_codes = re.findall(rf'(?<!\d)(\d{{{expected_length}}})(?!\d)', full_text)
         if fallback_codes:
-            print('🔎 Fallback exact-length matches found:', fallback_codes)
             return fallback_codes[0]
     else:
         fallback_codes = re.findall(r'(?<!\d)(\d{6})(?!\d)', full_text)
         if fallback_codes:
-            print('🔎 Fallback 6-digit matches found:', fallback_codes)
             return fallback_codes[0]
         fallback_codes = re.findall(r'(?<!\d)(\d{5})(?!\d)', full_text)
         if fallback_codes:
@@ -143,107 +126,112 @@ def extract_otp_from_email_body(body, html_body, expected_length=None):
     return None
 
 
-def fetch_naukri_otp(expected_length=None):
+def fetch_naukri_otp(expected_length=OTP_LENGTH):
     if not EMAIL_ADDRESS or not EMAIL_APP_PASSWORD:
         raise RuntimeError('Email credentials not configured for OTP retrieval.')
 
     print('📧 Starting OTP retrieval for:', EMAIL_ADDRESS)
     mail = imaplib.IMAP4_SSL('imap.gmail.com')
-    mail.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
-    mail.select('inbox')
+    try:
+        mail.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
+        mail.select('inbox')
 
-    search_terms = ['Naukri', 'naukri', 'OTP', 'One Time Password', 'Verification']
-    message_ids = []
-
-    for attempt in range(12):
-        print(f'⏳ Waiting for OTP email... attempt {attempt + 1}/12')
-        for term in search_terms:
-            status, data = mail.search(None, f'(UNSEEN SUBJECT "{term}")')
-            if status == 'OK' and data and data[0]:
-                message_ids = data[0].split()
-                print(f'✅ Found {len(message_ids)} unread message(s) matching "{term}"')
+        # Only accept unread messages that arrive for this login attempt. Using
+        # older messages risks submitting an expired OTP.
+        search_terms = ['Naukri', 'OTP', 'One Time Password', 'Verification']
+        message_ids = []
+        for attempt in range(12):
+            print(f'⏳ Waiting for a new OTP email... attempt {attempt + 1}/12')
+            for term in search_terms:
+                status, data = mail.search(None, f'(UNSEEN SUBJECT "{term}")')
+                if status == 'OK' and data and data[0]:
+                    message_ids = data[0].split()
+                    break
+            if message_ids:
                 break
-        if message_ids:
-            break
-        if attempt < 11:
-            time.sleep(5)
+            if attempt < 11:
+                time.sleep(5)
 
-    if not message_ids:
-        print('🔎 No unread OTP email found. Falling back to last matching Naukri email.')
-        for term in search_terms:
-            status, data = mail.search(None, f'(SUBJECT "{term}")')
-            if status == 'OK' and data and data[0]:
-                message_ids = data[0].split()
-                print(f'✅ Found {len(message_ids)} message(s) matching "{term}"')
-                break
+        if not message_ids:
+            raise RuntimeError('No new unread Naukri OTP email arrived within 60 seconds.')
 
-    if not message_ids:
-        status, data = mail.search(None, '(ALL)')
-        if status == 'OK' and data and data[0]:
-            all_ids = data[0].split()
-            message_ids = all_ids[-20:]
-            print(f'🔎 No subject-based match; searching last {len(message_ids)} messages')
+        for message_id in reversed(message_ids[-10:]):
+            status, data = mail.fetch(message_id, '(RFC822)')
+            if status != 'OK' or not data or not data[0]:
+                continue
 
-    if not message_ids:
-        raise RuntimeError('No email found for OTP retrieval.')
+            raw_email = data[0][1]
+            if DEBUG_FULL_EMAIL:
+                print('\n========== RAW OTP EMAIL START ==========')
+                print(raw_email.decode('utf-8', errors='replace'))
+                print('========== RAW OTP EMAIL END ============\n')
 
-    checked = 0
-    for message_id in reversed(message_ids[-10:]):
-        checked += 1
-        status, data = mail.fetch(message_id, '(RFC822)')
-        if status != 'OK' or not data or not data[0]:
-            continue
+            message = email.message_from_bytes(raw_email)
+            subject = message.get('Subject', '<no subject>')
+            from_header = message.get('From', '<no sender>')
+            date_header = message.get('Date', '<no date>')
+            body = ''
+            html_body = ''
+            if message.is_multipart():
+                for part in message.walk():
+                    if part.get_content_maintype() == 'multipart' or part.get_content_disposition() == 'attachment':
+                        continue
+                    content_type = part.get_content_type()
+                    payload = part.get_payload(decode=True)
+                    if not payload:
+                        continue
+                    try:
+                        decoded = payload.decode(part.get_content_charset() or 'utf-8', errors='ignore')
+                    except Exception:
+                        decoded = payload.decode(errors='ignore')
+                    if content_type == 'text/plain':
+                        body += decoded + '\n'
+                    elif content_type == 'text/html':
+                        html_body += decoded + '\n'
+            else:
+                content_type = message.get_content_type()
+                payload = message.get_payload(decode=True)
+                if payload:
+                    try:
+                        decoded = payload.decode(message.get_content_charset() or 'utf-8', errors='ignore')
+                    except Exception:
+                        decoded = payload.decode(errors='ignore')
+                    if content_type == 'text/plain':
+                        body = decoded
+                    elif content_type == 'text/html':
+                        html_body = decoded
 
-        raw_email = data[0][1]
-        message = email.message_from_bytes(raw_email)
-        subject = message.get('Subject', '<no subject>')
-        from_header = message.get('From', '<no sender>')
-        date_header = message.get('Date', '<no date>')
+            preview = (body or html_body or '').replace('\n', ' ').replace('\r', ' ').strip()
+            if len(preview) > 400:
+                preview = preview[:400] + '...'
+            print(f'📩 Candidate email: subject="{subject}" from="{from_header}" date="{date_header}"')
+            print('    preview:', preview)
 
-        body = ''
-        html_body = ''
-        if message.is_multipart():
-            for part in message.walk():
-                if part.get_content_maintype() == 'multipart' or part.get_content_disposition() == 'attachment':
-                    continue
-                content_type = part.get_content_type()
-                payload = part.get_payload(decode=True)
-                if not payload:
-                    continue
-                try:
-                    decoded = payload.decode(part.get_content_charset() or 'utf-8', errors='ignore')
-                except Exception:
-                    decoded = payload.decode(errors='ignore')
-                if content_type == 'text/plain':
-                    body += decoded + '\n'
-                elif content_type == 'text/html':
-                    html_body += decoded + '\n'
-        else:
-            content_type = message.get_content_type()
-            payload = message.get_payload(decode=True)
-            if payload:
-                try:
-                    decoded = payload.decode(message.get_content_charset() or 'utf-8', errors='ignore')
-                except Exception:
-                    decoded = payload.decode(errors='ignore')
-                if content_type == 'text/plain':
-                    body = decoded
-                elif content_type == 'text/html':
-                    html_body = decoded
+            otp_code = extract_otp_from_email_body(body, html_body, expected_length)
+            if otp_code:
+                print(f'✅ Found OTP: {otp_code}')
+                return otp_code
 
-        preview = (body or html_body or '').replace('\n', ' ').replace('\r', ' ').strip()
-        if len(preview) > 400:
-            preview = preview[:400] + '...'
+        raise RuntimeError('Could not find a 6-digit OTP in the new Naukri email.')
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
 
-        print(f'📩 Candidate #{checked}: subject="{subject}" from="{from_header}" date="{date_header}"')
-        print('    preview:', preview)
 
-        otp_code = extract_otp_from_email_body(body, html_body)
-        if otp_code:
-            print('✅ Found OTP:', otp_code)
-            return otp_code
-
-    raise RuntimeError('Could not find OTP code in email body after scanning recent messages.')
+def wait_for_upload_confirmation(driver, timeout=30):
+    confirmation_xpath = (
+        "//*[contains(translate(normalize-space(.),"
+        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'resume uploaded') "
+        "or contains(translate(normalize-space(.),"
+        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'resume has been uploaded') "
+        "or contains(translate(normalize-space(.),"
+        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'successfully uploaded')]"
+    )
+    WebDriverWait(driver, timeout).until(
+        EC.visibility_of_element_located((By.XPATH, confirmation_xpath))
+    )
 
 # ==== 🚀 Main Function ====
 def upload_resume():
@@ -316,15 +304,13 @@ def upload_resume():
 
         otp_inputs = find_otp_inputs(driver)
         if otp_inputs:
-            expected_length = len(otp_inputs)
-            print(f'🔐 Detected {expected_length} OTP input(s). Retrieving email OTP...')
-            otp_code = fetch_naukri_otp(expected_length=expected_length)
-            print(f'🔐 Using OTP: {otp_code}')
+            print('🔐 Detected an OTP challenge. Retrieving a new 6-digit email OTP...')
+            otp_code = fetch_naukri_otp(expected_length=OTP_LENGTH)
 
             if otp_code is None:
                 raise RuntimeError('Failed to extract OTP from email body.')
 
-            if expected_length == 1:
+            if len(otp_inputs) == 1:
                 otp_inputs[0].clear()
                 otp_inputs[0].send_keys(otp_code)
             else:
@@ -366,9 +352,9 @@ def upload_resume():
         # Step 6: Upload resume
         upload_input = wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='file']")))
         upload_input.send_keys(str(RESUME_PATH))
+        wait_for_upload_confirmation(driver)
         print("✅ Resume uploaded successfully!")
 
-        time.sleep(5)
         send_success_email()
 
 
@@ -376,11 +362,13 @@ def upload_resume():
         print("❌ Error occurred:", e)
         print(traceback.format_exc())
         try:
-            driver.save_screenshot("error.png")
-            with open('error_page.html', 'w', encoding='utf-8') as f:
+            ARTIFACTS_DIR.mkdir(exist_ok=True)
+            driver.save_screenshot(str(ARTIFACTS_DIR / 'error.png'))
+            with open(ARTIFACTS_DIR / 'error_page.html', 'w', encoding='utf-8') as f:
                 f.write(driver.page_source)
         except Exception:
             pass
+        raise
     finally:
         driver.quit()
 
@@ -397,11 +385,10 @@ def send_success_email():
     msg.attach(MIMEText(body, 'plain'))
 
     try:
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
-        server.send_message(msg)
-        server.quit()
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_APP_PASSWORD)
+            server.send_message(msg)
         print("📧 Success email sent!")
     except Exception as e:
         print("❌ Failed to send email:", e)
@@ -412,8 +399,4 @@ if __name__ == "__main__":
         upload_resume()
     except Exception as e:
         print("❌ Exited with error:", e)
-
-
-
-
-
+        sys.exit(1)
