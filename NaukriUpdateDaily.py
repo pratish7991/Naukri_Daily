@@ -273,17 +273,42 @@ def log_in_to_resume_service(driver, timeout=30):
         return
 
     print('🔐 Naukri FastForward has a separate session. Logging in there...')
-    driver.find_element(By.ID, 'login_Layer').click()
+    login_link = driver.find_element(By.ID, 'login_Layer')
+    driver.execute_script('arguments[0].click();', login_link)
 
-    email_input = WebDriverWait(driver, timeout).until(
-        EC.visibility_of_element_located((By.ID, 'eLogin'))
-    )
-    password_input = driver.find_element(By.ID, 'pLogin')
-    email_input.clear()
-    email_input.send_keys(NAUKRI_EMAIL)
-    password_input.clear()
-    password_input.send_keys(NAUKRI_PASSWORD)
-    driver.find_element(By.CSS_SELECTOR, '#lgnFrm button[type="submit"]').click()
+    # FastForward keeps this form in the DOM even while its login overlay is
+    # hidden. In headless Chrome the overlay sometimes does not open, so use
+    # the same form directly rather than waiting indefinitely for visibility.
+    try:
+        email_input = WebDriverWait(driver, 5).until(
+            EC.visibility_of_element_located((By.ID, 'eLogin'))
+        )
+        password_input = driver.find_element(By.ID, 'pLogin')
+        email_input.clear()
+        email_input.send_keys(NAUKRI_EMAIL)
+        password_input.clear()
+        password_input.send_keys(NAUKRI_PASSWORD)
+        driver.find_element(By.CSS_SELECTOR, '#lgnFrm button[type="submit"]').click()
+    except TimeoutException:
+        print('⚠️ FastForward login overlay stayed hidden; submitting its embedded form directly.')
+        login_form = WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((By.ID, 'lgnFrm'))
+        )
+        email_input = driver.find_element(By.ID, 'eLogin')
+        password_input = driver.find_element(By.ID, 'pLogin')
+        driver.execute_script(
+            "arguments[0].value = arguments[1];"
+            "arguments[0].dispatchEvent(new Event('input', {bubbles: true}));",
+            email_input,
+            NAUKRI_EMAIL,
+        )
+        driver.execute_script(
+            "arguments[0].value = arguments[1];"
+            "arguments[0].dispatchEvent(new Event('input', {bubbles: true}));",
+            password_input,
+            NAUKRI_PASSWORD,
+        )
+        driver.execute_script('arguments[0].submit();', login_form)
 
     time.sleep(3)
     otp_inputs = find_otp_inputs(driver)
@@ -301,6 +326,9 @@ def log_in_to_resume_service(driver, timeout=30):
             "'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'VERIFY')]",
         ).click()
 
+    # The form targets a hidden iframe. Reload the page after submission so
+    # the top-level FastForward page reflects the new authenticated session.
+    driver.get('https://resume.naukri.com/cv-submission')
     WebDriverWait(driver, timeout).until(lambda d: resume_service_is_logged_in(d))
     print('✅ Logged in to Naukri FastForward.')
 
