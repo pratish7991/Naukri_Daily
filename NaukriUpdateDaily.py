@@ -233,6 +233,54 @@ def wait_for_upload_confirmation(driver, timeout=30):
         EC.visibility_of_element_located((By.XPATH, confirmation_xpath))
     )
 
+
+def find_resume_upload_input(driver, timeout=30):
+    """Locate Naukri's file input across its profile and resume-upload pages."""
+    file_input_locator = (By.CSS_SELECTOR, "input[type='file']")
+    upload_trigger_xpath = (
+        "//*[self::button or self::a or @role='button']["
+        "contains(translate(normalize-space(.),"
+        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'upload resume') "
+        "or contains(translate(normalize-space(.),"
+        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'update resume') "
+        "or contains(translate(normalize-space(.),"
+        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'replace resume')]"
+    )
+    upload_pages = [
+        'https://resume.naukri.com/cv-submission',
+        'https://www.naukri.com/mnjuser/profile',
+    ]
+
+    for page_url in upload_pages:
+        print(f'🔎 Looking for resume upload control at: {page_url}')
+        driver.get(page_url)
+        try:
+            return WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located(file_input_locator)
+            )
+        except TimeoutException:
+            # Some profile variants only render the file input after the user
+            # activates an "Upload/Update Resume" control.
+            triggers = driver.find_elements(By.XPATH, upload_trigger_xpath)
+            for trigger in triggers:
+                try:
+                    if trigger.is_displayed() and trigger.is_enabled():
+                        driver.execute_script('arguments[0].click();', trigger)
+                        break
+                except Exception:
+                    continue
+            try:
+                return WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located(file_input_locator)
+                )
+            except TimeoutException:
+                print(f'⚠️ No file input at {driver.current_url}; page title: {driver.title!r}')
+
+    raise TimeoutException(
+        'Could not find Naukri resume upload input on the profile or resume-submission page.'
+    )
+
+
 # ==== 🚀 Main Function ====
 def upload_resume():
     if not NAUKRI_EMAIL or not NAUKRI_PASSWORD:
@@ -345,12 +393,8 @@ def upload_resume():
         print("✅ Logged in successfully.")
         time.sleep(2)
 
-        # Step 5: Go to profile page
-        driver.get("https://www.naukri.com/mnjuser/profile")
-        time.sleep(5)
-
-        # Step 6: Upload resume
-        upload_input = wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='file']")))
+        # Step 5: Open the resume-management UI and upload the latest resume.
+        upload_input = find_resume_upload_input(driver)
         upload_input.send_keys(str(RESUME_PATH))
         wait_for_upload_confirmation(driver)
         print("✅ Resume uploaded successfully!")
