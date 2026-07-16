@@ -1,8 +1,6 @@
 name: Naukri Daily Resume Upload
 
 on:
-  schedule:
-    - cron: '30 0 * * *' # Runs daily at 06:00 IST (00:30 UTC)
   workflow_dispatch: {}
 
 jobs:
